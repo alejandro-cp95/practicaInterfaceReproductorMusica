@@ -5,6 +5,7 @@
 #include "fsl_gpio.h"
 #include "fsl_port.h"
 #include "fsl_tpm.h"
+#include "fsl_adc16.h"
 
 #include "pin_mux.h"
 #include "clock_config.h"
@@ -62,6 +63,17 @@
 /* Get source clock for TPM driver */
 #define TPM_SOURCE_CLOCK CLOCK_GetFreq(kCLOCK_PllFllSelClk)
 
+#define DEMO_ADC16_BASE ADC0
+#define DEMO_ADC16_CHANNEL_GROUP 0U
+#define DEMO_ADC16_USER_CHANNEL 0U /*PTE20, ADC0_SE0 */
+
+#define muestrasADC 10U
+
+#define R1_Maxima				210000U
+#define R2						56000U
+#define mayorValorADC 			4095U
+#define menorValorADC 			R2*mayorValorADC/(R2+R1_Maxima)
+
 typedef enum	/* Definición de tipo para los estados de la SM de debounce */
 {
 	DISABLED,	/* No se ha tocado el botón */
@@ -97,6 +109,12 @@ typedef enum	/* Definición de tipo para valores de retorno de la SM de debounce
 	NO_ACTION				/* Default */
 } TIPOS_PRESIONADO;
 
+adc16_config_t adc16ConfigStruct;
+adc16_channel_config_t adc16ChannelConfigStruct;
+pit_config_t pitConfig;
+tpm_config_t tpmInfo;
+tpm_chnl_pwm_signal_param_t tpmParam;
+
 /*******************************************************************************
  * Prototipos
  ******************************************************************************/
@@ -130,6 +148,9 @@ cancion cancion_num[4] = {{"Cancion 1", 20}, {"Cancion 2",21}, {"Cancion 3",22},
 
 volatile bool brightnessUp = true; /* Indicate LED is brighter or dimmer */
 volatile uint8_t dutycycleActualizado = 1U;
+
+uint32_t pasoPWM = 0U;
+const uint16_t diferenciaMayorMenorADC = mayorValorADC-menorValorADC;
 
 /*******************************************************************************
  * Code
@@ -216,6 +237,20 @@ void PIT_HANDLER(void)
 		{
 
 		}
+
+        ADC16_SetChannelConfig(DEMO_ADC16_BASE, DEMO_ADC16_CHANNEL_GROUP, &adc16ChannelConfigStruct);
+        while (0U == (kADC16_ChannelConversionDoneFlag &
+        		ADC16_GetChannelStatusFlags(DEMO_ADC16_BASE, DEMO_ADC16_CHANNEL_GROUP)))
+        {
+
+        }
+
+        pasoPWM=0;
+        for(uint8_t i=0;i<muestrasADC;i++){
+        	pasoPWM += ((4095-ADC16_GetChannelConversionValue(DEMO_ADC16_BASE, DEMO_ADC16_CHANNEL_GROUP))*10)/diferenciaMayorMenorADC;
+        }
+        pasoPWM /= muestrasADC;
+        dutycycleActualizado = pasoPWM*10;
 		/* Update PWM duty cycle */
 		TPM_UpdatePwmDutycycle(BOARD_TPM_BASEADDR, (tpm_chnl_t)BOARD_TPM_CHANNEL, kTPM_CenterAlignedPwm,
 				dutycycleActualizado);
@@ -231,10 +266,9 @@ void PIT_HANDLER(void)
  */
 int main(void)
 {
-        /*Estructuras y variables de la funciÃƒÂ³n main*/
+        /*Estructuras y variables de la función main*/
 
     /* Structure of initialize PIT */
-    pit_config_t pitConfig;
 
     /* Define the init structure for the output LED pin*/
     gpio_pin_config_t led_config = {
@@ -245,8 +279,6 @@ int main(void)
     gpio_pin_config_t int_config = {
             kGPIO_DigitalInput, 0,
     };
-    tpm_config_t tpmInfo;
-    tpm_chnl_pwm_signal_param_t tpmParam;
     tpm_pwm_level_select_t pwmLevel = kTPM_HighTrue;
 
     //////////////////////////////////////////////
@@ -307,6 +339,30 @@ int main(void)
     TPM_StartTimer(BOARD_TPM_BASEADDR, kTPM_SystemClock);
 
     PIT_StartTimer(PIT, kPIT_Chnl_1);  	/* Se activa timer de 50ms para botón */
+
+    /*
+     * adc16ConfigStruct.referenceVoltageSource = kADC16_ReferenceVoltageSourceVref;
+     * adc16ConfigStruct.clockSource = kADC16_ClockSourceAsynchronousClock;
+     * adc16ConfigStruct.enableAsynchronousClock = true;
+     * adc16ConfigStruct.clockDivider = kADC16_ClockDivider8;
+     * adc16ConfigStruct.resolution = kADC16_ResolutionSE12Bit;
+     * adc16ConfigStruct.longSampleMode = kADC16_LongSampleDisabled;
+     * adc16ConfigStruct.enableHighSpeed = false;
+     * adc16ConfigStruct.enableLowPower = false;
+     * adc16ConfigStruct.enableContinuousConversion = false;
+     */
+    ADC16_GetDefaultConfig(&adc16ConfigStruct);
+#ifdef BOARD_ADC_USE_ALT_VREF
+    adc16ConfigStruct.referenceVoltageSource = kADC16_ReferenceVoltageSourceValt;
+#endif
+    ADC16_Init(DEMO_ADC16_BASE, &adc16ConfigStruct);
+    ADC16_EnableHardwareTrigger(DEMO_ADC16_BASE, false); /* Make sure the software trigger is used. */
+
+    adc16ChannelConfigStruct.channelNumber = DEMO_ADC16_USER_CHANNEL;
+    adc16ChannelConfigStruct.enableInterruptOnConversionCompleted = false;
+#if defined(FSL_FEATURE_ADC16_HAS_DIFF_MODE) && FSL_FEATURE_ADC16_HAS_DIFF_MODE
+    adc16ChannelConfigStruct.enableDifferentialConversion = false;
+#endif /* FSL_FEATURE_ADC16_HAS_DIFF_MODE */
 
     while (true)
     {
