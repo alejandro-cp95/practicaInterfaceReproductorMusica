@@ -4,6 +4,7 @@
 #include "fsl_pit.h"
 #include "fsl_gpio.h"
 #include "fsl_port.h"
+#include "fsl_tpm.h"
 
 #include "pin_mux.h"
 #include "clock_config.h"
@@ -47,13 +48,19 @@
 #define LED_HIGH_STATE 1U
 #define LED_LOW_STATE  0U
 
-#define thousandMiliseconds     1000U
-#define fiftyMiliseconds        50U
+#define thousandMiliseconds     20U
+#define fiftyMiliseconds        1U
 #define pulses_for_44_1kHz		544U
 
 #define reproduccionRapida    5U    /* Valor a sumarse a conteoMuestreo en estado ADELANTAR */
 #define reproduccionRevertida -5	/* Valor a sumarse a conteoMuestreo en estado ATRASAR */
 #define reproduccionNormal    1U	/* Valor a sumarse a conteoMuestreo en estado PLAY */
+
+#define BOARD_TPM_BASEADDR TPM0
+#define BOARD_TPM_CHANNEL 2U
+
+/* Get source clock for TPM driver */
+#define TPM_SOURCE_CLOCK CLOCK_GetFreq(kCLOCK_PllFllSelClk)
 
 typedef enum	/* Definición de tipo para los estados de la SM de debounce */
 {
@@ -121,6 +128,8 @@ typedef struct _cancion
 } cancion;
 cancion cancion_num[4] = {{"Cancion 1", 20}, {"Cancion 2",21}, {"Cancion 3",22}, {"Cancion 4", 4}};
 
+volatile bool brightnessUp = true; /* Indicate LED is brighter or dimmer */
+volatile uint8_t dutycycleActualizado = 1U;
 
 /*******************************************************************************
  * Code
@@ -207,6 +216,9 @@ void PIT_HANDLER(void)
 		{
 
 		}
+		/* Update PWM duty cycle */
+		TPM_UpdatePwmDutycycle(BOARD_TPM_BASEADDR, (tpm_chnl_t)BOARD_TPM_CHANNEL, kTPM_CenterAlignedPwm,
+				dutycycleActualizado);
 	}
 	else
 	{
@@ -233,6 +245,9 @@ int main(void)
     gpio_pin_config_t int_config = {
             kGPIO_DigitalInput, 0,
     };
+    tpm_config_t tpmInfo;
+    tpm_chnl_pwm_signal_param_t tpmParam;
+    tpm_pwm_level_select_t pwmLevel = kTPM_HighTrue;
 
     //////////////////////////////////////////////
 
@@ -253,6 +268,10 @@ int main(void)
     /* Init input INT GPIO. */
     GPIO_PinInit(BOARD_INT2_GPIO, BOARD_INT2_GPIO_PIN, &int_config);
 
+    tpmParam.chnlNumber = (tpm_chnl_t)BOARD_TPM_CHANNEL;
+    tpmParam.level = pwmLevel;
+    tpmParam.dutyCyclePercent = dutycycleActualizado;
+
     /* Board pin, clock, debug console init */
     BOARD_InitPins();
     BOARD_BootClockRUN();
@@ -268,7 +287,7 @@ int main(void)
 
     /* Set timer period for channel 0 */
     PIT_SetTimerPeriod(PIT, kPIT_Chnl_0, pulses_for_44_1kHz);
-    PIT_SetTimerPeriod(PIT, kPIT_Chnl_1, USEC_TO_COUNT(1000U, PIT_SOURCE_CLOCK));
+    PIT_SetTimerPeriod(PIT, kPIT_Chnl_1, USEC_TO_COUNT(50000U, PIT_SOURCE_CLOCK));
 
     /* Enable timer interrupts for channel 0 */
     PIT_EnableInterrupts(PIT, kPIT_Chnl_0, kPIT_TimerInterruptEnable);
@@ -276,6 +295,18 @@ int main(void)
 
     /* Enable at the NVIC */
     EnableIRQ(PIT_IRQ_ID);
+
+    CLOCK_SetTpmClock(1U);
+
+    TPM_GetDefaultConfig(&tpmInfo);
+        /* Initialize TPM module */
+    TPM_Init(BOARD_TPM_BASEADDR, &tpmInfo);
+
+    TPM_SetupPwm(BOARD_TPM_BASEADDR, &tpmParam, 1U, kTPM_CenterAlignedPwm, 24000U, TPM_SOURCE_CLOCK);
+
+    TPM_StartTimer(BOARD_TPM_BASEADDR, kTPM_SystemClock);
+
+    PIT_StartTimer(PIT, kPIT_Chnl_1);  	/* Se activa timer de 50ms para botón */
 
     while (true)
     {
@@ -293,30 +324,26 @@ TIPOS_PRESIONADO maquinaEstadosPush(void)
 			if(GPIO_ReadPinInput(BOARD_INT0_GPIO, BOARD_INT0_GPIO_PIN)==0) /* Se presiona */
 			{			 	 	 	 	 	 	 	 	 	 		/* Previous/Backwards*/
 				estadoPushSiguiente=COUNT_EN0;
-				PIT_StartTimer(PIT, kPIT_Chnl_1);  	/* Se activa timer de ms para botón */
 			}
 			else if(GPIO_ReadPinInput(BOARD_INT1_GPIO, BOARD_INT1_GPIO_PIN)==0) /* Se presiona */
 			{													    /* Play/Pause/Stop */
 				estadoPushSiguiente=COUNT_EN1;
-				PIT_StartTimer(PIT, kPIT_Chnl_1);	/* Se activa timer de ms para botón */
 			}
 			else if(GPIO_ReadPinInput(BOARD_INT2_GPIO, BOARD_INT2_GPIO_PIN)==0) /* Se presiona */
 			{														/* Next/Forward */
 				estadoPushSiguiente=COUNT_EN2;
-				PIT_StartTimer(PIT, kPIT_Chnl_1);	/* Se activa timer de ms para botón */
 			}
 			else
 			{
 				estadoPushSiguiente=DISABLED;
 			}
+			counterPush=0;						/* Se limpia el contador */
 			break;
 		case COUNT_EN0:	/* Se detecta un pico en el botón Prev/Backward */
 			/* En este estado, la explicación es la misma para los 3 botones */
 			if(GPIO_ReadPinInput(BOARD_INT0_GPIO, BOARD_INT0_GPIO_PIN)==1) /*Si se */
 			{							                         /* soltó el botón */
 				estadoPushSiguiente=DISABLED;
-				PIT_StopTimer(PIT,kPIT_Chnl_1);		/* Detiene timer de ms para botón */
-				counterPush=0;						/* Se limpia el contador */
 			}
 			else								 /* Si sigue presionado */
 			{
@@ -378,8 +405,6 @@ TIPOS_PRESIONADO maquinaEstadosPush(void)
         		if((counterPush-diffCounterPush)>=fiftyMiliseconds)	/* y la diferencia */
         	{	/* entre la actual cuenta, y al momento de detectar el pico >=50ms */
         			estadoPushSiguiente=DISABLED;	/* Se considera botón liberado */
-        			PIT_StopTimer(PIT,kPIT_Chnl_1);/* Se detiene timer de 1ms para botón */
-        			counterPush=0;			/* Se limpia el contador */
         			if(diffCounterPush<=thousandMiliseconds) /* Si la cuenta al momento */
         			{								/* de liberado es menor a 1s */
         				valorRetorno = PB_NORMAL;	/* Se notifica presionado normal */
@@ -408,8 +433,6 @@ TIPOS_PRESIONADO maquinaEstadosPush(void)
         	if(GPIO_ReadPinInput(BOARD_INT1_GPIO, BOARD_INT1_GPIO_PIN)==1)
 			{
         		estadoPushSiguiente=DISABLED;
-        		PIT_StopTimer(PIT,kPIT_Chnl_1);
-        		counterPush=0;
         	}
         	else
         	{
@@ -446,8 +469,6 @@ TIPOS_PRESIONADO maquinaEstadosPush(void)
         		if((counterPush-diffCounterPush)>=fiftyMiliseconds)	/* y la diferencia */
         		{			/* de la cuenta actual y al momento del pico es >=50ms */
         			estadoPushSiguiente=DISABLED;	/* Se detecta como botón liberado */
-        			PIT_StopTimer(PIT,kPIT_Chnl_1);	/* Se detiene timer de ms de botón */
-        			counterPush=0;					/* Se limpia el contador */
         			if(diffCounterPush<=thousandMiliseconds)/* Si el conteo fue <=50ms */
         			{
         				valorRetorno = PPS_NORMAL;	/* Fue presionado normal */
@@ -469,8 +490,6 @@ TIPOS_PRESIONADO maquinaEstadosPush(void)
         	if(GPIO_ReadPinInput(BOARD_INT2_GPIO, BOARD_INT2_GPIO_PIN)==1)
         	{
         		estadoPushSiguiente=DISABLED;
-        		PIT_StopTimer(PIT,kPIT_Chnl_1);
-        		counterPush=0;
         	}
         	else
         	{
@@ -529,8 +548,6 @@ TIPOS_PRESIONADO maquinaEstadosPush(void)
         		if((counterPush-diffCounterPush)>=fiftyMiliseconds)
         		{
         			estadoPushSiguiente=DISABLED;
-        			PIT_StopTimer(PIT,kPIT_Chnl_1);
-        			counterPush=0;
         			if(diffCounterPush<=thousandMiliseconds)
         			{
         				valorRetorno = NF_NORMAL;
@@ -564,10 +581,10 @@ TIPOS_PRESIONADO maquinaEstadosPush(void)
 void maquinaEstadosReproductor(void)
 {
 	TIPOS_PRESIONADO presionadoBoton = NO_ACTION;
+	presionadoBoton = maquinaEstadosPush();		/* Se lee el estado de algún botón presionado */
 	switch(estadoReproductorActual)
 	{
 		case PAUSE:		/* Estado de no reproducción */
-			presionadoBoton = maquinaEstadosPush();		/* Se lee el estado de algún botón presionado */
 			if(presionadoBoton == PPS_NORMAL)			/* Se presionó de manera normal Play/Pause/Stop */
 			{
 				estadoReproductorSiguiente = PLAY;		/* Pasa a reproducir la canción */
@@ -630,7 +647,6 @@ void maquinaEstadosReproductor(void)
 			}
 			break;
 		case PLAY:		/* Estado de reproducción de canción */
-			presionadoBoton = maquinaEstadosPush();	/* Se lee el estado de algún botón presionado */
 			if(presionadoBoton == PPS_NORMAL)	/* Si se presionó el botón Play/Pause/Stop */
 			{
 				estadoReproductorSiguiente = PAUSE;	/* Pasa al estado de pause */
@@ -697,7 +713,6 @@ void maquinaEstadosReproductor(void)
 			}
 			break;
 		case ADELANTAR:		/* El comando de adelantar canción fue generado */
-			presionadoBoton = maquinaEstadosPush();
 			if(presionadoBoton == NF_PROLONGADO_RELEASE)	/* Se liberó botón Next/Forward */
 			{
 				estadoReproductorSiguiente = PLAY;	/* Vuelve a reproducción normal */
@@ -711,13 +726,12 @@ void maquinaEstadosReproductor(void)
 				if((conteoMuestreo+baseSuma)>(44118*cancion_num[numCancion].duracion_segundos))
 				{
 					estadoReproductorSiguiente = PLAY;	/* Comienza siguiente canción en reproducción normal */
-					counterPush=0;		/* Se limpia el contador de 1ms de botón */
+					counterPush=0;		/* Se limpia el contador de 50ms de botón */
 					baseSuma = reproduccionNormal;		/* Lo que se suma al contador de progreso de */
 				}										/* vulve a ser 1 */
 			}
 			break;
 		case ATRASAR:				/* El comando de atrasar canción fue generado */
-			presionadoBoton = maquinaEstadosPush();
 			if(presionadoBoton == PB_PROLONGADO_RELEASE)	/* Se liberó botón Prev/Backward */
 			{
 				estadoReproductorSiguiente = PLAY;	/* Vuelve a reproducción normal */
