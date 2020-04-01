@@ -4,13 +4,13 @@
 
 # Add inputs and outputs from these tool invocations to the build variables 
 C_SRCS += \
-../myLibrary/adctopwm.c 
+../myLibrary/system.c 
 
 OBJS += \
-./myLibrary/adctopwm.o 
+./myLibrary/system.o 
 
 C_DEPS += \
-./myLibrary/adctopwm.d 
+./myLibrary/system.d 
 
 
 # Each subdirectory must supply rules for building sources it contributes

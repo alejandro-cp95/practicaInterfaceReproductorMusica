@@ -1,4 +1,10 @@
 
+/* Práctica: "Interface Reproductor Música"	*/
+/* Integrantes: Vázquez Barba Christian 	*/
+/*  			Moreno Arroyo Diego 		*/
+/*				Ortega González Misael 		*/
+/*				Chávez Padilla Alejandro 	*/
+
 #include "fsl_debug_console.h"
 #include "board.h"
 #include "fsl_pit.h"
@@ -14,58 +20,16 @@
 /*******************************************************************************
  * Definiciones
  ******************************************************************************/
-#define PIT_HANDLER PIT_IRQHandler
-#define PIT_IRQ_ID PIT_IRQn
-/* Get source clock for PIT driver */
-#define PIT_SOURCE_CLOCK CLOCK_GetFreq(kCLOCK_BusClk)
-
-/* Cuidar no dejar en diferente GPIO los LEDs de conteo de canción. En caso
- * de hacerlo, modificar código en donde se cambie de canción. */
-#define BOARD_LED0_GPIO GPIOE  	/* LED 1 de acuerdo a PDF de requerimientos de la práctica */
-#define BOARD_LED0_GPIO_PIN 30U
-#define BOARD_LED0_GPIO_PIN_MASK (1U << BOARD_LED0_GPIO_PIN)
-#define BOARD_LED1_GPIO GPIOE  	/* LED 2 de acuerdo a PDF de requerimientos de la práctica */
-#define BOARD_LED1_GPIO_PIN 5U
-#define BOARD_LED1_GPIO_PIN_MASK (1U << BOARD_LED1_GPIO_PIN)
-#define BOARD_LED2_GPIO GPIOE  	/* LED 3 de acuerdo a PDF de requerimientos de la práctica */
-#define BOARD_LED2_GPIO_PIN 4U
-#define BOARD_LED2_GPIO_PIN_MASK (1U << BOARD_LED2_GPIO_PIN)
-#define BOARD_LED3_GPIO GPIOE  	/* LED A de acuerdo a PDF de requerimientos de la práctica */
-#define BOARD_LED3_GPIO_PIN 3U
-#define BOARD_LED3_GPIO_PIN_MASK (1U << BOARD_LED3_GPIO_PIN)
-#define BOARD_LED4_GPIO GPIOE  	/* LED B de acuerdo a PDF de requerimientos de la práctica */
-#define BOARD_LED4_GPIO_PIN 2U
-#define BOARD_LED4_GPIO_PIN_MASK (1U << BOARD_LED4_GPIO_PIN)
-#define BOARD_INT0_GPIO GPIOE  	/* Botón B3 Prev/Backward */
-#define BOARD_INT0_GPIO_PIN 23U
-#define BOARD_INT0_GPIO_PIN_MASK (1U << BOARD_INT0_GPIO_PIN)
-#define BOARD_INT1_GPIO GPIOE  	/* Botón B1 Play/Pause/Stop */
-#define BOARD_INT1_GPIO_PIN 22U
-#define BOARD_INT1_GPIO_PIN_MASK (1U << BOARD_INT1_GPIO_PIN)
-#define BOARD_INT2_GPIO GPIOE  	/* Botón B2 Next/Forward */
-#define BOARD_INT2_GPIO_PIN 21U
-#define BOARD_INT2_GPIO_PIN_MASK (1U << BOARD_INT2_GPIO_PIN)
-
-#define LED_HIGH_STATE 1U
-#define LED_LOW_STATE  0U
 
 #define thousandMiliseconds     20U
 #define fiftyMiliseconds        1U
-#define pulses_for_44_1kHz		544U
 
 #define reproduccionRapida    5U    /* Valor a sumarse a conteoMuestreo en estado ADELANTAR */
 #define reproduccionRevertida -5	/* Valor a sumarse a conteoMuestreo en estado ATRASAR */
 #define reproduccionNormal    1U	/* Valor a sumarse a conteoMuestreo en estado PLAY */
 
-#define BOARD_TPM_BASEADDR TPM0
-#define BOARD_TPM_CHANNEL 2U
-
-/* Get source clock for TPM driver */
-#define TPM_SOURCE_CLOCK CLOCK_GetFreq(kCLOCK_PllFllSelClk)
-
-#define DEMO_ADC16_BASE ADC0
-#define DEMO_ADC16_CHANNEL_GROUP 0U
-#define DEMO_ADC16_USER_CHANNEL 0U /*PTE20, ADC0_SE0 */
+#define LED_HIGH_STATE 1U
+#define LED_LOW_STATE  0U
 
 #define muestrasADC 10U
 
@@ -155,120 +119,14 @@ const uint16_t diferenciaMayorMenorADC = mayorValorADC-menorValorADC;
 /*******************************************************************************
  * Code
  ******************************************************************************/
-void PIT_HANDLER(void)
-{
-	uint32_t cambioLed=0;	/* Ayuda a determinar qué LED de avance encender */
-	if(PIT_GetStatusFlags(PIT, kPIT_Chnl_0)==true)
-	{	/* Si al disminuir (al ATRASAR) */
-		if(baseSuma==-5)
-		{		/* el contador de progreso no hiciera underflow */
-			if(conteoMuestreo>5)
-			{
-				conteoMuestreo+=baseSuma;	/* Se suma -5 para atrasar canción */
-			}
-			else		/* Si se alcanzó el inicio de canción */
-			{
-				conteoMuestreo=0;	/* Se limpia el conteo de progreso de canción */
-				/* Se apagan LEDs de avance de canción */
-				GPIO_ClearPinsOutput(BOARD_LED0_GPIO,BOARD_LED0_GPIO_PIN_MASK);
-				GPIO_ClearPinsOutput(BOARD_LED1_GPIO,BOARD_LED1_GPIO_PIN_MASK);
-				GPIO_ClearPinsOutput(BOARD_LED2_GPIO,BOARD_LED2_GPIO_PIN_MASK);
-			}
-		}
-		else		/* Si al incrementar */
-		{  	/* el contador de progreso no sobrepasara la duración de la canción al incrementar */
-			if((conteoMuestreo+baseSuma)<=(44118*cancion_num[numCancion].duracion_segundos))
-			{
-				conteoMuestreo+=baseSuma;	/* Se incrementa contador de progreso de canción */
-			}
-			else
-			{
-				conteoMuestreo=0;	/* Se limpia el conteo de progreso de canción */
-				if(numCancion<3)	/* Se incrementa o hace overflow el número de canción */
-				{
-					numCancion++;
-				}
-				else
-				{
-					numCancion = 0;
-				}
-				/* Se muestra número de canción */
-				GPIO_SetPinsOutput(BOARD_LED4_GPIO, 0x0000000C&((uint32_t)(numCancion << 2)));
-				GPIO_ClearPinsOutput(BOARD_LED4_GPIO, 0x0000000C&(~((uint32_t)(numCancion << 2))));
-			}
-		}
-		PIT_ClearStatusFlags(PIT, kPIT_Chnl_0, kPIT_TimerFlag);
-		cambioLed=conteoMuestreo%66177; /* Se hace división por módulo con el número
-		 	 	 	                       de muestras que corresponderían a 1.5s */
-		cambioLed/=22059;				/* Y se divide sobre un tercio de dicha
-		 	 	 	 	 	 	 	 	   cantidad, pues cada LED enciende por 0.5s */
-		if(conteoMuestreo!=0)
-		{
-			switch(cambioLed)
-			{
-				case 0:			/* Si da como resultado 0, enciende el primer LED */
-					GPIO_SetPinsOutput(BOARD_LED0_GPIO,BOARD_LED0_GPIO_PIN_MASK);
-					GPIO_ClearPinsOutput(BOARD_LED1_GPIO,BOARD_LED1_GPIO_PIN_MASK);
-					GPIO_ClearPinsOutput(BOARD_LED2_GPIO,BOARD_LED2_GPIO_PIN_MASK);
-					break;
-				case 1:			/* Segundo LED */
-					GPIO_ClearPinsOutput(BOARD_LED0_GPIO,BOARD_LED0_GPIO_PIN_MASK);
-					GPIO_SetPinsOutput(BOARD_LED1_GPIO,BOARD_LED1_GPIO_PIN_MASK);
-					GPIO_ClearPinsOutput(BOARD_LED2_GPIO,BOARD_LED2_GPIO_PIN_MASK);
-					break;
-				case 2:			/* Tercer LED */
-					GPIO_ClearPinsOutput(BOARD_LED0_GPIO,BOARD_LED0_GPIO_PIN_MASK);
-					GPIO_ClearPinsOutput(BOARD_LED1_GPIO,BOARD_LED1_GPIO_PIN_MASK);
-					GPIO_SetPinsOutput(BOARD_LED2_GPIO,BOARD_LED2_GPIO_PIN_MASK);
-					break;
-				default:
-					break;
-			}
-		}
-	}
-	else if(PIT_GetStatusFlags(PIT, kPIT_Chnl_1)==true)
-	{
-		PIT_ClearStatusFlags(PIT, kPIT_Chnl_1, kPIT_TimerFlag);
-		if(counterPush!=0xFFFFFFFF)
-		{
-			counterPush++; /* Conteo para determinar cuántos ms se presiona un botón */
-		}
-		else
-		{
-
-		}
-
-        ADC16_SetChannelConfig(DEMO_ADC16_BASE, DEMO_ADC16_CHANNEL_GROUP, &adc16ChannelConfigStruct);
-        while (0U == (kADC16_ChannelConversionDoneFlag &
-        		ADC16_GetChannelStatusFlags(DEMO_ADC16_BASE, DEMO_ADC16_CHANNEL_GROUP)))
-        {
-
-        }
-
-        pasoPWM=0;
-        for(uint8_t i=0;i<muestrasADC;i++){
-        	pasoPWM += ((4095-ADC16_GetChannelConversionValue(DEMO_ADC16_BASE, DEMO_ADC16_CHANNEL_GROUP))*10)/diferenciaMayorMenorADC;
-        }
-        pasoPWM /= muestrasADC;
-        dutycycleActualizado = pasoPWM*10;
-		/* Update PWM duty cycle */
-		TPM_UpdatePwmDutycycle(BOARD_TPM_BASEADDR, (tpm_chnl_t)BOARD_TPM_CHANNEL, kTPM_CenterAlignedPwm,
-				dutycycleActualizado);
-	}
-	else
-	{
-
-	}
-}
 
 /*!
  * @brief Main function
  */
 int main(void)
 {
-        /*Estructuras y variables de la función main*/
+	/*Estructuras y variables de la función main*/
 
-    /* Structure of initialize PIT */
 
     /* Define the init structure for the output LED pin*/
     gpio_pin_config_t led_config = {
@@ -283,86 +141,13 @@ int main(void)
 
     //////////////////////////////////////////////
 
-    /* Init output LED GPIO. */
-    GPIO_PinInit(BOARD_LED0_GPIO, BOARD_LED0_GPIO_PIN, &led_config);
-    /* Init output LED GPIO. */
-    GPIO_PinInit(BOARD_LED1_GPIO, BOARD_LED1_GPIO_PIN, &led_config);
-    /* Init output LED GPIO. */
-    GPIO_PinInit(BOARD_LED2_GPIO, BOARD_LED2_GPIO_PIN, &led_config);
-    /* Init output LED GPIO. */
-    GPIO_PinInit(BOARD_LED3_GPIO, BOARD_LED3_GPIO_PIN, &led_config);
-    /* Init output LED GPIO. */
-    GPIO_PinInit(BOARD_LED4_GPIO, BOARD_LED4_GPIO_PIN, &led_config);
-    /* Init input INT GPIO. */
-    GPIO_PinInit(BOARD_INT0_GPIO, BOARD_INT0_GPIO_PIN, &int_config);
-    /* Init input INT GPIO. */
-    GPIO_PinInit(BOARD_INT1_GPIO, BOARD_INT1_GPIO_PIN, &int_config);
-    /* Init input INT GPIO. */
-    GPIO_PinInit(BOARD_INT2_GPIO, BOARD_INT2_GPIO_PIN, &int_config);
+    system_inicializacionPinesClock(&led_config, &int_config);
 
-    tpmParam.chnlNumber = (tpm_chnl_t)BOARD_TPM_CHANNEL;
-    tpmParam.level = pwmLevel;
-    tpmParam.dutyCyclePercent = dutycycleActualizado;
+    system_configTPM(&tpmInfo, &tpmParam, pwmLevel, dutycycleActualizado);
 
-    /* Board pin, clock, debug console init */
-    BOARD_InitPins();
-    BOARD_BootClockRUN();
-    BOARD_InitDebugConsole();
+    system_configADC(&adc16ConfigStruct, &adc16ChannelConfigStruct);
 
-    /*
-     * pitConfig.enableRunInDebug = false;
-     */
-    PIT_GetDefaultConfig(&pitConfig);
-
-    /* Init pit module */
-    PIT_Init(PIT, &pitConfig);
-
-    /* Set timer period for channel 0 */
-    PIT_SetTimerPeriod(PIT, kPIT_Chnl_0, pulses_for_44_1kHz);
-    PIT_SetTimerPeriod(PIT, kPIT_Chnl_1, USEC_TO_COUNT(50000U, PIT_SOURCE_CLOCK));
-
-    /* Enable timer interrupts for channel 0 */
-    PIT_EnableInterrupts(PIT, kPIT_Chnl_0, kPIT_TimerInterruptEnable);
-    PIT_EnableInterrupts(PIT, kPIT_Chnl_1, kPIT_TimerInterruptEnable);
-
-    /* Enable at the NVIC */
-    EnableIRQ(PIT_IRQ_ID);
-
-    CLOCK_SetTpmClock(1U);
-
-    TPM_GetDefaultConfig(&tpmInfo);
-        /* Initialize TPM module */
-    TPM_Init(BOARD_TPM_BASEADDR, &tpmInfo);
-
-    TPM_SetupPwm(BOARD_TPM_BASEADDR, &tpmParam, 1U, kTPM_CenterAlignedPwm, 24000U, TPM_SOURCE_CLOCK);
-
-    TPM_StartTimer(BOARD_TPM_BASEADDR, kTPM_SystemClock);
-
-    PIT_StartTimer(PIT, kPIT_Chnl_1);  	/* Se activa timer de 50ms para botón */
-
-    /*
-     * adc16ConfigStruct.referenceVoltageSource = kADC16_ReferenceVoltageSourceVref;
-     * adc16ConfigStruct.clockSource = kADC16_ClockSourceAsynchronousClock;
-     * adc16ConfigStruct.enableAsynchronousClock = true;
-     * adc16ConfigStruct.clockDivider = kADC16_ClockDivider8;
-     * adc16ConfigStruct.resolution = kADC16_ResolutionSE12Bit;
-     * adc16ConfigStruct.longSampleMode = kADC16_LongSampleDisabled;
-     * adc16ConfigStruct.enableHighSpeed = false;
-     * adc16ConfigStruct.enableLowPower = false;
-     * adc16ConfigStruct.enableContinuousConversion = false;
-     */
-    ADC16_GetDefaultConfig(&adc16ConfigStruct);
-#ifdef BOARD_ADC_USE_ALT_VREF
-    adc16ConfigStruct.referenceVoltageSource = kADC16_ReferenceVoltageSourceValt;
-#endif
-    ADC16_Init(DEMO_ADC16_BASE, &adc16ConfigStruct);
-    ADC16_EnableHardwareTrigger(DEMO_ADC16_BASE, false); /* Make sure the software trigger is used. */
-
-    adc16ChannelConfigStruct.channelNumber = DEMO_ADC16_USER_CHANNEL;
-    adc16ChannelConfigStruct.enableInterruptOnConversionCompleted = false;
-#if defined(FSL_FEATURE_ADC16_HAS_DIFF_MODE) && FSL_FEATURE_ADC16_HAS_DIFF_MODE
-    adc16ChannelConfigStruct.enableDifferentialConversion = false;
-#endif /* FSL_FEATURE_ADC16_HAS_DIFF_MODE */
+    system_configPIT(&pitConfig);
 
     while (true)
     {
@@ -802,4 +587,111 @@ void maquinaEstadosReproductor(void)
 			break;
 	}
 	estadoReproductorActual=estadoReproductorSiguiente;
+}
+
+
+void PIT_HANDLER(void)
+{
+	uint32_t cambioLed=0;	/* Ayuda a determinar qué LED de avance encender */
+	if(PIT_GetStatusFlags(PIT, kPIT_Chnl_0)==true)
+	{	/* Si al disminuir (al ATRASAR) */
+		if(baseSuma==-5)
+		{		/* el contador de progreso no hiciera underflow */
+			if(conteoMuestreo>5)
+			{
+				conteoMuestreo+=baseSuma;	/* Se suma -5 para atrasar canción */
+			}
+			else		/* Si se alcanzó el inicio de canción */
+			{
+				conteoMuestreo=0;	/* Se limpia el conteo de progreso de canción */
+				/* Se apagan LEDs de avance de canción */
+				GPIO_ClearPinsOutput(BOARD_LED0_GPIO,BOARD_LED0_GPIO_PIN_MASK);
+				GPIO_ClearPinsOutput(BOARD_LED1_GPIO,BOARD_LED1_GPIO_PIN_MASK);
+				GPIO_ClearPinsOutput(BOARD_LED2_GPIO,BOARD_LED2_GPIO_PIN_MASK);
+			}
+		}
+		else		/* Si al incrementar */
+		{  	/* el contador de progreso no sobrepasara la duración de la canción al incrementar */
+			if((conteoMuestreo+baseSuma)<=(44118*cancion_num[numCancion].duracion_segundos))
+			{
+				conteoMuestreo+=baseSuma;	/* Se incrementa contador de progreso de canción */
+			}
+			else
+			{
+				conteoMuestreo=0;	/* Se limpia el conteo de progreso de canción */
+				if(numCancion<3)	/* Se incrementa o hace overflow el número de canción */
+				{
+					numCancion++;
+				}
+				else
+				{
+					numCancion = 0;
+				}
+				/* Se muestra número de canción */
+				GPIO_SetPinsOutput(BOARD_LED4_GPIO, 0x0000000C&((uint32_t)(numCancion << 2)));
+				GPIO_ClearPinsOutput(BOARD_LED4_GPIO, 0x0000000C&(~((uint32_t)(numCancion << 2))));
+			}
+		}
+		PIT_ClearStatusFlags(PIT, kPIT_Chnl_0, kPIT_TimerFlag);
+		cambioLed=conteoMuestreo%66177; /* Se hace división por módulo con el número
+		 	 	 	                       de muestras que corresponderían a 1.5s */
+		cambioLed/=22059;				/* Y se divide sobre un tercio de dicha
+		 	 	 	 	 	 	 	 	   cantidad, pues cada LED enciende por 0.5s */
+		if(conteoMuestreo!=0)
+		{
+			switch(cambioLed)
+			{
+				case 0:			/* Si da como resultado 0, enciende el primer LED */
+					GPIO_SetPinsOutput(BOARD_LED0_GPIO,BOARD_LED0_GPIO_PIN_MASK);
+					GPIO_ClearPinsOutput(BOARD_LED1_GPIO,BOARD_LED1_GPIO_PIN_MASK);
+					GPIO_ClearPinsOutput(BOARD_LED2_GPIO,BOARD_LED2_GPIO_PIN_MASK);
+					break;
+				case 1:			/* Segundo LED */
+					GPIO_ClearPinsOutput(BOARD_LED0_GPIO,BOARD_LED0_GPIO_PIN_MASK);
+					GPIO_SetPinsOutput(BOARD_LED1_GPIO,BOARD_LED1_GPIO_PIN_MASK);
+					GPIO_ClearPinsOutput(BOARD_LED2_GPIO,BOARD_LED2_GPIO_PIN_MASK);
+					break;
+				case 2:			/* Tercer LED */
+					GPIO_ClearPinsOutput(BOARD_LED0_GPIO,BOARD_LED0_GPIO_PIN_MASK);
+					GPIO_ClearPinsOutput(BOARD_LED1_GPIO,BOARD_LED1_GPIO_PIN_MASK);
+					GPIO_SetPinsOutput(BOARD_LED2_GPIO,BOARD_LED2_GPIO_PIN_MASK);
+					break;
+				default:
+					break;
+			}
+		}
+	}
+	else if(PIT_GetStatusFlags(PIT, kPIT_Chnl_1)==true)
+	{
+		PIT_ClearStatusFlags(PIT, kPIT_Chnl_1, kPIT_TimerFlag);
+		if(counterPush!=0xFFFFFFFF)
+		{
+			counterPush++; /* Conteo para determinar cuántos ms se presiona un botón */
+		}
+		else
+		{
+
+		}
+
+        ADC16_SetChannelConfig(DEMO_ADC16_BASE, DEMO_ADC16_CHANNEL_GROUP, &adc16ChannelConfigStruct);
+        while (0U == (kADC16_ChannelConversionDoneFlag &
+        		ADC16_GetChannelStatusFlags(DEMO_ADC16_BASE, DEMO_ADC16_CHANNEL_GROUP)))
+        {
+
+        }
+
+        pasoPWM=0;
+        for(uint8_t i=0;i<muestrasADC;i++){
+        	pasoPWM += ((4095-ADC16_GetChannelConversionValue(DEMO_ADC16_BASE, DEMO_ADC16_CHANNEL_GROUP))*10)/diferenciaMayorMenorADC;
+        }
+        pasoPWM /= muestrasADC;
+        dutycycleActualizado = pasoPWM*10;
+		/* Update PWM duty cycle */
+		TPM_UpdatePwmDutycycle(BOARD_TPM_BASEADDR, (tpm_chnl_t)BOARD_TPM_CHANNEL, kTPM_CenterAlignedPwm,
+				dutycycleActualizado);
+	}
+	else
+	{
+
+	}
 }
